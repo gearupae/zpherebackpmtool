@@ -1,0 +1,41 @@
+# Python caches and build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+
+# Environment files
+.env
+.env.*
+
+# Logs and PIDs
+*.log
+server.out
+uvicorn.pid
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+
+# Alembic (keep migrations tracked; only ignore caches)
+alembic/*cache*/
+
+# Uploads and temp
+uploads/
+tmp/
+*.pid

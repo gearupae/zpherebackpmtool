@@ -1,0 +1,169 @@
+"""
+New dependency injection for multi-tenant architecture
+"""
+from typing import Generator, Optional
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from ..db.dependencies import get_master_db_session, create_tenant_db_dependency
+from ..db.tenant_manager import tenant_manager
+from ..core.security import verify_token
+from ..models.master.user import User
+from ..models.master.organization import Organization
+
+security = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_master_db_session)
+) -> User:
+    """Get current authenticated user from master database"""
+    token = credentials.credentials
+    username = verify_token(token)
+    
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Get user from master database
+    result = await db.execute(
+        select(User).where(User.username == username)
+    )
+    user = result.scalar_one_or_none()
+    
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user"
+        )
+    
+    return user
+
+
+async def get_current_active_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Get current active user"""
+    if not current_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user"
+        )
+    return current_user
+
+
+async def get_current_organization(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_master_db_session)
+) -> Organization:
+    """Get current user's organization from master database"""
+    result = await db.execute(
+        select(Organization).where(Organization.id == current_user.organization_id)
+    )
+    organization = result.scalar_one_or_none()
+    
+    if organization is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found"
+        )
+    
+    if not organization.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Organization is not active"
+        )
+    
+    return organization
+
+
+async def get_tenant_db(
+    current_org: Organization = Depends(get_current_organization)
+) -> AsyncSession:
+    """Get tenant database session for current organization"""
+    # Ensure tenant database exists
+    if not current_org.database_created:
+        await tenant_manager.create_tenant_database(current_org.id)
+        # Update organization record
+        async with tenant_manager.get_master_session() as master_session:
+            current_org.database_created = True
+            master_session.add(current_org)
+            await master_session.commit()
+    
+    session = await tenant_manager.get_tenant_session(current_org.id)
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
+def require_admin(current_user: User = Depends(get_current_active_user)) -> User:
+    """Require admin role"""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    return current_user
+
+
+def require_manager(current_user: User = Depends(get_current_active_user)) -> User:
+    """Require manager role or above"""
+    if not current_user.is_manager:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    return current_user
+
+
+# Rate limiting dependency
+def get_tenant_id(request: Request, current_user: User = Depends(get_current_active_user)) -> str:
+    """Get tenant ID for rate limiting"""
+    return current_user.organization_id
+
+
+# Optional user dependency (for public endpoints)
+async def get_current_user_optional(
+    request: Request,
+    db: AsyncSession = Depends(get_master_db_session)
+) -> Optional[User]:
+    """Get current user if authenticated, None otherwise"""
+    try:
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return None
+        
+        token = auth_header.split(" ")[1]
+        username = verify_token(token)
+        
+        if username is None:
+            return None
+        
+        result = await db.execute(
+            select(User).where(User.username == username)
+        )
+        user = result.scalar_one_or_none()
+        
+        if user and user.is_active:
+            return user
+        
+        return None
+    except Exception:
+        return None

@@ -1,0 +1,67 @@
+from sqlalchemy import Column, String, Text, Boolean, JSON, Integer, DateTime
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from ...db.tenant_manager import TenantBase
+import uuid
+
+
+class Customer(TenantBase):
+    """Customer/Client model for tenant database (no organization_id needed)"""
+    __tablename__ = "tenant_customers"
+    
+    # Primary key and timestamps
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Basic contact info
+    first_name = Column(String(100), nullable=False)
+    last_name = Column(String(100), nullable=False)
+    email = Column(String(255), nullable=False)
+    phone = Column(String(20))
+    
+    # Company information
+    company_name = Column(String(255))
+    company_website = Column(String(500))
+    job_title = Column(String(100))
+    
+    # Address information
+    address_line_1 = Column(String(255))
+    address_line_2 = Column(String(255))
+    city = Column(String(100))
+    state = Column(String(100))
+    postal_code = Column(String(20))
+    country = Column(String(100))
+    
+    # Note: No organization_id needed - each tenant has its own database
+    
+    # Customer status and classification
+    is_active = Column(Boolean, default=True)
+    customer_type = Column(String(50), default="prospect")  # prospect, client, lead, inactive
+    source = Column(String(100))  # How they found us (referral, website, etc.)
+    
+    # Financial information
+    credit_limit = Column(Integer)  # In cents
+    payment_terms = Column(String(50), default="net_30")  # net_15, net_30, net_60
+    
+    # Notes and custom fields
+    notes = Column(Text)
+    tags = Column(JSON, default=list)  # List of tags for categorization
+    custom_fields = Column(JSON, default=dict)  # Custom field definitions
+    
+    # Relationships (within tenant database)
+    # projects = relationship("Project", back_populates="customer", cascade="all, delete-orphan")
+    # invoices = relationship("ProjectInvoice", back_populates="customer", cascade="all, delete-orphan")
+    
+    @property
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}"
+    
+    @property
+    def display_name(self):
+        if self.company_name:
+            return f"{self.full_name} - {self.company_name}"
+        return self.full_name
+    
+    def __repr__(self):
+        return f"<Customer(name='{self.full_name}', company='{self.company_name}')>"
